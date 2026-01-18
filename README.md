@@ -5,10 +5,10 @@ A Linux utility for customizing your shell environment with minimal friction, de
 
 ## Features
 
-- **Auto-detection**: Identifies your default shell, package manager, and distribution
-- **Dependency management**: Automatically installs missing dependencies and required tools
-- **Shell enhancement**: Improves shell appearance and usability
-- **Function creation**: Simplifies creating custom shell functions (e.g., `mkcd`, `pkilllp`) across different shells
+- **Auto-detection**: Identifies your default shell, package manager, and distribution.
+- **Dependency management**: Automatically installs missing dependencies and required tools.
+- **Shell enhancement**: Improves shell appearance and usability.
+- **Function creation**: Simplifies creating custom shell functions (e.g., `mkcd`, `pkilllp`) across different shells.
 - **Cross-shell support**: Works regardless of your default shell (bash, zsh, fish, etc.)
 
 ## Installation
