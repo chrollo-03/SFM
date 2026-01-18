@@ -41,7 +41,7 @@ show_header() {
     echo -e "${CYAN}${BOLD}"
     echo "╔════════════════════════════════════════════════════════════╗"
     echo "║                                                            ║"
-    echo "║      SFM (Shell Function Manager) Setup - Enhanced         ║"
+    echo "║             SFM (Shell Function Manager) Setup             ║"
     echo "║                                                            ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
