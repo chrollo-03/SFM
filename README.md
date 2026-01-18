@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="logo/smf.png" alt="SFM Logo" />
-</p>
+<img src="logo/smf.png" alt="SFM Logo" />
 
 # Shell Function Manager (SFM)
 
