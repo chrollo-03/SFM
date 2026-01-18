@@ -44,8 +44,8 @@ A Linux utility for customizing your shell environment with minimal friction, de
 ## Installation
 
 ```bash
-git clone <repository-url>.git
-cd <repository-name>
+git clone https://github.com/chrollo-03/SFM.git
+cd SFM
 chmod +x ./sfm.sh
 ./sfm.sh
 ```
