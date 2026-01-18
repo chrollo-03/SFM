@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo/smf.png" alt="SFM Logo" />
+</p>
+
 # Shell Function Manager (SFM)
 
 A Linux utility for customizing your shell environment with minimal friction, designed for both newcomers and experienced users.
