@@ -1,4 +1,5 @@
-# Shell Function Manager (SFM) <img src="./logo/sfm.png" alt="SFM Logo" width="120" />
+# Shell Function Manager (SFM)
+<img src="./logo/sfm.png" alt="SFM Logo" width="140" />
 
 A Linux utility for customizing your shell environment with minimal friction, designed for both newcomers and experienced users.
 
