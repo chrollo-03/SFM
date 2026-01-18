@@ -1,4 +1,4 @@
-<img src="./Logo/sfm.png" alt="SFM Logo" />
+<img src="./logo/sfm.png" alt="SFM Logo" />
 
 # Shell Function Manager (SFM)
 
