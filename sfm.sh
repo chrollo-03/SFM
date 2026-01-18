@@ -70,7 +70,7 @@ detect_distro() {
 detect_package_manager() {
     log "Detecting package manager..."
     
-    if command -v apt-get &> /dev/null; then
+    if command -v apt &> /dev/null; then
         PKG_MANAGER="apt"
         PKG_INSTALL_CMD="sudo apt-get install -y"
     elif command -v dnf &> /dev/null; then
