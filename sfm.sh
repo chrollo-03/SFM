@@ -48,6 +48,8 @@ ENABLE_CORE_FUNCTIONS=true      # extract, mkcd, psgrep, backup, myip, portcheck
 ENABLE_NAV_ALIASES=true         # .., ..., ...., ll, la, l
 ENABLE_SAFETY_ALIASES=true      # rm -i, cp -i, mv -i
 ENABLE_MISC_ALIASES=true        # c, h, ports, meminfo, psmem, pscpu, git shortcuts
+ENABLE_COMPLETION_SUPPORT=true  # zsh compinit / bash-completion
+ENABLE_INTERACTIVE_EXTRAS=true  # zsh plugin hints / bash history search bindings / fish note
 
 # ---------------------------
 # Logging
@@ -173,8 +175,6 @@ detect_distro() {
 
 # ---------------------------
 # Detect package manager
-# - system managers for dependencies
-# - universal managers only informational
 # ---------------------------
 detect_package_manager() {
   log "Detecting package manager..."
@@ -196,7 +196,6 @@ detect_package_manager() {
   PKG_MANAGER="none"
   PKG_INSTALL_CMD=""
 
-  # Pick a primary SYSTEM package manager by priority
   for mgr in apt dnf yum yay pacman zypper apk; do
     if [[ " ${system_managers[*]} " == *" $mgr "* ]]; then
       PKG_MANAGER="$mgr"
@@ -240,7 +239,7 @@ detect_package_manager() {
 }
 
 # ---------------------------
-# Detect shell (IMPORTANT FIX: use $SHELL, not BASH_VERSION)
+# Detect shell
 # ---------------------------
 detect_shell() {
   log "Detecting target shell..."
@@ -275,7 +274,6 @@ detect_shell() {
       ALIASES_FILE="${ALIASES_FILE_BASE}.sh"
       ;;
     fish)
-      # We'll use conf.d (smooth + no editing config.fish needed)
       SHELL_CONFIG="$HOME/.config/fish/conf.d/sfm.fish"
       FUNCTIONS_FILE="${FUNCTIONS_FILE_BASE}.fish"
       ALIASES_FILE="${ALIASES_FILE_BASE}.fish"
@@ -313,8 +311,6 @@ install_missing_deps() {
   log_info "Installing deps: ${missing[*]}"
 
   if [[ "$BATCH_MODE" == false ]]; then
-    # run with spinner
-    # shellcheck disable=SC2086
     $PKG_INSTALL_CMD "${missing[@]}" >>"$LOG_FILE" 2>&1 &
     local pid=$!
     spinner "$pid"
@@ -326,7 +322,6 @@ install_missing_deps() {
       log_error "Failed installing deps"
     fi
   else
-    # shellcheck disable=SC2086
     if $PKG_INSTALL_CMD "${missing[@]}" >>"$LOG_FILE" 2>&1; then
       printf '%b\n' "${GREEN}✓${NC} Dependencies installed"
       log_info "Deps installed successfully"
@@ -343,7 +338,6 @@ check_dependencies() {
 
   local missing=()
 
-  # Required tools for core workflow
   for dep in tar gzip bzip2 unzip; do
     if ! command -v "$dep" >/dev/null 2>&1; then
       missing+=("$dep")
@@ -353,7 +347,6 @@ check_dependencies() {
     fi
   done
 
-  # curl OR wget is enough
   if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
     missing+=("curl")
     printf '%b\n' "${YELLOW}⚠${NC} Missing: curl (or wget)"
@@ -368,10 +361,9 @@ check_dependencies() {
 }
 
 # ---------------------------
-# Configuration wizard (p10k-style Y/n)
+# Configuration wizard
 # ---------------------------
 config_wizard() {
-  # Skip wizard if non-interactive or batch/yes-to-all
   if [[ "$BATCH_MODE" == true || "$YES_TO_ALL" == true || ! -t 0 ]]; then
     log_info "Skipping configuration wizard (batch/yes-to-all or non-interactive)"
     return 0
@@ -405,11 +397,25 @@ config_wizard() {
     ENABLE_MISC_ALIASES=false
   fi
 
+  if ask_yn "Enable shell completion helpers (zsh compinit / bash-completion if available)?"; then
+    ENABLE_COMPLETION_SUPPORT=true
+  else
+    ENABLE_COMPLETION_SUPPORT=false
+  fi
+
+  if ask_yn "Enable interactive extras (zsh autosuggestions/syntax/history hints, bash history-substring-search bindings)?"; then
+    ENABLE_INTERACTIVE_EXTRAS=true
+  else
+    ENABLE_INTERACTIVE_EXTRAS=false
+  fi
+
   printf '\n%b\n' "${BOLD}Summary:${NC}"
-  printf '  Core functions:      %s\n' "$( [[ "$ENABLE_CORE_FUNCTIONS"   == true ]] && echo 'yes' || echo 'no' )"
-  printf '  Nav + ls aliases:    %s\n' "$( [[ "$ENABLE_NAV_ALIASES"      == true ]] && echo 'yes' || echo 'no' )"
-  printf '  Safety aliases:      %s\n' "$( [[ "$ENABLE_SAFETY_ALIASES"   == true ]] && echo 'yes' || echo 'no' )"
-  printf '  Misc helper aliases: %s\n' "$( [[ "$ENABLE_MISC_ALIASES"     == true ]] && echo 'yes' || echo 'no' )"
+  printf '  Core functions:           %s\n' "$( [[ "$ENABLE_CORE_FUNCTIONS"      == true ]] && echo 'yes' || echo 'no' )"
+  printf '  Nav + ls aliases:         %s\n' "$( [[ "$ENABLE_NAV_ALIASES"         == true ]] && echo 'yes' || echo 'no' )"
+  printf '  Safety aliases:           %s\n' "$( [[ "$ENABLE_SAFETY_ALIASES"      == true ]] && echo 'yes' || echo 'no' )"
+  printf '  Misc helper aliases:      %s\n' "$( [[ "$ENABLE_MISC_ALIASES"        == true ]] && echo 'yes' || echo 'no' )"
+  printf '  Completion helpers:       %s\n' "$( [[ "$ENABLE_COMPLETION_SUPPORT"  == true ]] && echo 'yes' || echo 'no' )"
+  printf '  Interactive extras:       %s\n' "$( [[ "$ENABLE_INTERACTIVE_EXTRAS"  == true ]] && echo 'yes' || echo 'no' )"
   printf '\n'
 }
 
@@ -434,7 +440,7 @@ validate_functions_file() {
 }
 
 # ---------------------------
-# Generate functions + aliases
+# Generate functions
 # ---------------------------
 generate_functions() {
   printf '%b\n' "${BOLD}Generating shell functions...${NC}"
@@ -652,6 +658,9 @@ EOF
   printf '\n'
 }
 
+# ---------------------------
+# Generate aliases
+# ---------------------------
 generate_aliases() {
   printf '%b\n' "${BOLD}Generating shell aliases...${NC}"
   log "Generating aliases file: $ALIASES_FILE"
@@ -771,20 +780,27 @@ EOF
 }
 
 # ---------------------------
-# Config wiring (idempotent)
-# - fish: write conf.d/sfm.fish (best practice)
-# - bash/zsh: add a marked block to rc
+# Config wiring
 # ---------------------------
 update_shell_config() {
   printf '%b\n\n' "${BOLD}Updating shell configuration...${NC}"
 
   if [[ "$SHELL_NAME" == "fish" ]]; then
-    # fish loads conf.d automatically
-    atomic_write "$SHELL_CONFIG" <<EOF
+    if [[ "$ENABLE_INTERACTIVE_EXTRAS" == true ]]; then
+      atomic_write "$SHELL_CONFIG" <<EOF
+# SFM - Shell Function Manager (auto-loaded by fish)
+test -f "$FUNCTIONS_FILE"; and source "$FUNCTIONS_FILE"
+test -f "$ALIASES_FILE"; and source "$ALIASES_FILE"
+# SFM: fish already provides autosuggestions, syntax highlighting,
+# and history-based search out of the box.
+EOF
+    else
+      atomic_write "$SHELL_CONFIG" <<EOF
 # SFM - Shell Function Manager (auto-loaded by fish)
 test -f "$FUNCTIONS_FILE"; and source "$FUNCTIONS_FILE"
 test -f "$ALIASES_FILE"; and source "$ALIASES_FILE"
 EOF
+    fi
     printf '%b\n\n' "${GREEN}✓${NC} Fish drop-in created: ${BOLD}$SHELL_CONFIG${NC}"
     log_info "Fish drop-in created: $SHELL_CONFIG"
     return 0
@@ -798,6 +814,7 @@ EOF
 $SFM_BEGIN
 [ -f "$FUNCTIONS_FILE" ] && source "$FUNCTIONS_FILE"
 [ -f "$ALIASES_FILE" ] && source "$ALIASES_FILE"
+# (Optional) Enable completion and extras manually if desired.
 $SFM_END
 EOF
     printf '\n'
@@ -811,21 +828,58 @@ EOF
   printf '%b\n' "${GREEN}✓${NC} Backed up to: ${backup_file##*/}"
   log_info "Backed up shell config to: $backup_file"
 
-  # Remove old block (if any)
   if grep -qF "$SFM_BEGIN" "$SHELL_CONFIG" 2>/dev/null; then
     log_info "Removing old SFM block from $SHELL_CONFIG"
-    # delete from begin marker to end marker inclusive
     sed -i.bak "/$(printf '%s' "$SFM_BEGIN" | sed 's/[.[\*^$(){}?+|/]/\\&/g')/,/$(printf '%s' "$SFM_END" | sed 's/[.[\*^$(){}?+|/]/\\&/g')/d" "$SHELL_CONFIG" || true
     rm -f "${SHELL_CONFIG}.bak" || true
   fi
 
-  cat >>"$SHELL_CONFIG" <<EOF
+  {
+    echo
+    echo "$SFM_BEGIN"
+    echo "[ -f \"$FUNCTIONS_FILE\" ] && source \"$FUNCTIONS_FILE\""
+    echo "[ -f \"$ALIASES_FILE\" ] && source \"$ALIASES_FILE\""
 
-$SFM_BEGIN
-[ -f "$FUNCTIONS_FILE" ] && source "$FUNCTIONS_FILE"
-[ -f "$ALIASES_FILE" ] && source "$ALIASES_FILE"
-$SFM_END
-EOF
+    if [[ "$ENABLE_COMPLETION_SUPPORT" == true ]]; then
+      if [[ "$SHELL_NAME" == "zsh" ]]; then
+        cat <<'EOZ'
+# SFM: basic zsh completion support
+autoload -Uz compinit
+compinit
+EOZ
+      elif [[ "$SHELL_NAME" == "bash" ]]; then
+        cat <<'EOB'
+# SFM: basic bash completion support (if installed)
+if [ -f /usr/share/bash-completion/bash_completion ]; then
+  . /usr/share/bash-completion/bash_completion
+elif [ -f /etc/bash_completion ]; then
+  . /etc/bash_completion
+fi
+EOB
+      fi
+    fi
+
+    if [[ "$ENABLE_INTERACTIVE_EXTRAS" == true ]]; then
+      if [[ "$SHELL_NAME" == "zsh" ]]; then
+        cat <<'EOZP'
+# SFM: suggested zsh plugins (for oh-my-zsh or similar)
+# Add these to your plugins=(...) line if you use oh-my-zsh:
+#   zsh-autosuggestions
+#   zsh-syntax-highlighting
+#   history-substring-search
+EOZP
+      elif [[ "$SHELL_NAME" == "bash" ]]; then
+        cat <<'EOBP'
+# SFM: history substring search (bash equivalent to zsh history-substring-search)
+# Type a few characters and use Up/Down to cycle matching history.
+bind '"\e[A": history-search-backward'
+bind '"\e[B": history-search-forward'
+EOBP
+      fi
+    fi
+
+    echo "$SFM_END"
+  } >>"$SHELL_CONFIG"
 
   printf '%b\n\n' "${GREEN}✓${NC} Updated $SHELL_CONFIG"
   log_info "Updated shell config: $SHELL_CONFIG"
@@ -844,7 +898,6 @@ rollback_sfm() {
 
   local rollback_success=true
 
-  # fish: remove drop-in
   if [[ "$SHELL_NAME" == "fish" ]]; then
     if [[ -f "$SHELL_CONFIG" ]]; then
       rm -f "$SHELL_CONFIG" || rollback_success=false
@@ -852,7 +905,6 @@ rollback_sfm() {
       log_info "Removed fish drop-in: $SHELL_CONFIG"
     fi
   else
-    # restore latest backup if exists
     local backup_file=""
     backup_file="$(ls -t "${SHELL_CONFIG}.sfm-backup-"* 2>/dev/null | head -1 || true)"
     if [[ -n "$backup_file" ]]; then
@@ -867,7 +919,6 @@ rollback_sfm() {
         fi
       fi
     else
-      # remove marker block if present
       if grep -qF "$SFM_BEGIN" "$SHELL_CONFIG" 2>/dev/null; then
         sed -i.bak "/$(printf '%s' "$SFM_BEGIN" | sed 's/[.[\*^$(){}?+|/]/\\&/g')/,/$(printf '%s' "$SFM_END" | sed 's/[.[\*^$(){}?+|/]/\\&/g')/d" "$SHELL_CONFIG" || true
         rm -f "${SHELL_CONFIG}.bak" || true
@@ -881,7 +932,6 @@ rollback_sfm() {
     if [[ -d "$SFM_DIR" ]]; then
       rm -rf "$SFM_DIR" || rollback_success=false
       printf '%b\n' "${GREEN}✓${NC} Removed $SFM_DIR"
-      # can't log after deleting dir reliably
     fi
   fi
 
@@ -906,10 +956,7 @@ setup_sfm() {
   detect_package_manager
   detect_shell
   check_dependencies
-
-  # p10k-style Y/n wizard
   config_wizard
-
   generate_functions
   generate_aliases
   update_shell_config
