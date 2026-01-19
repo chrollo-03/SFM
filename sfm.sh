@@ -70,32 +70,87 @@ detect_distro() {
 detect_package_manager() {
     log "Detecting package manager..."
     
+    local detected_managers=()
+    
+    # Check all available package managers
     if command -v apt &> /dev/null; then
-        PKG_MANAGER="apt"
-        PKG_INSTALL_CMD="sudo apt-get install -y"
-    elif command -v dnf &> /dev/null; then
-        PKG_MANAGER="dnf"
-        PKG_INSTALL_CMD="sudo dnf install -y"
-    elif command -v yum &> /dev/null; then
-        PKG_MANAGER="yum"
-        PKG_INSTALL_CMD="sudo yum install -y"
-    elif command -v pacman &> /dev/null; then
-        PKG_MANAGER="pacman"
-        PKG_INSTALL_CMD="sudo pacman -S --noconfirm"
-    elif command -v zypper &> /dev/null; then
-        PKG_MANAGER="zypper"
-        PKG_INSTALL_CMD="sudo zypper install -y"
-    elif command -v apk &> /dev/null; then
-        PKG_MANAGER="apk"
-        PKG_INSTALL_CMD="sudo apk add"
-    else
+        detected_managers+=("apt")
+    fi
+    if command -v dnf &> /dev/null; then
+        detected_managers+=("dnf")
+    fi
+    if command -v yum &> /dev/null; then
+        detected_managers+=("yum")
+    fi
+    if command -v yay &> /dev/null; then
+        detected_managers+=("yay")
+    fi
+    if command -v pacman &> /dev/null; then
+        detected_managers+=("pacman")
+    fi
+    if command -v zypper &> /dev/null; then
+        detected_managers+=("zypper")
+    fi
+    if command -v flatpak &> /dev/null; then
+        detected_managers+=("flatpak")
+    fi
+    if command -v apk &> /dev/null; then
+        detected_managers+=("apk")
+    fi
+    
+    # Handle no package managers found
+    if [ ${#detected_managers[@]} -eq 0 ]; then
         PKG_MANAGER="none"
         echo -e "${YELLOW}⚠${NC} No package manager detected"
+        log "No package manager detected"
         return 1
     fi
     
+    # Select primary package manager (priority order)
+    if [[ " ${detected_managers[@]} " =~ " apt " ]]; then
+        PKG_MANAGER="apt"
+        PKG_INSTALL_CMD="sudo apt-get install -y"
+    elif [[ " ${detected_managers[@]} " =~ " dnf " ]]; then
+        PKG_MANAGER="dnf"
+        PKG_INSTALL_CMD="sudo dnf install -y"
+    elif [[ " ${detected_managers[@]} " =~ " yum " ]]; then
+        PKG_MANAGER="yum"
+        PKG_INSTALL_CMD="sudo yum install -y"
+    elif [[ " ${detected_managers[@]} " =~ " yay " ]]; then
+        PKG_MANAGER="yay"
+        PKG_INSTALL_CMD="yay -S --noconfirm"
+    elif [[ " ${detected_managers[@]} " =~ " pacman " ]]; then
+        PKG_MANAGER="pacman"
+        PKG_INSTALL_CMD="sudo pacman -S --noconfirm"
+    elif [[ " ${detected_managers[@]} " =~ " zypper " ]]; then
+        PKG_MANAGER="zypper"
+        PKG_INSTALL_CMD="sudo zypper install -y"
+    elif [[ " ${detected_managers[@]} " =~ " apk " ]]; then
+        PKG_MANAGER="apk"
+        PKG_INSTALL_CMD="sudo apk add"
+    elif [[ " ${detected_managers[@]} " =~ " flatpak " ]]; then
+        PKG_MANAGER="flatpak"
+        PKG_INSTALL_CMD="flatpak install -y"
+    fi
+    
+    # Display primary package manager
     echo -e "${GREEN}✓${NC} Package manager: ${BOLD}$PKG_MANAGER${NC}"
-    log "Package manager: $PKG_MANAGER"
+    log "Primary package manager: $PKG_MANAGER"
+    
+    # Display additional package managers if found
+    if [ ${#detected_managers[@]} -gt 1 ]; then
+        local others=()
+        for mgr in "${detected_managers[@]}"; do
+            if [ "$mgr" != "$PKG_MANAGER" ]; then
+                others+=("$mgr")
+            fi
+        done
+        if [ ${#others[@]} -gt 0 ]; then
+            echo -e "${BLUE}ℹ${NC} Also detected: ${others[*]}"
+            log "Additional package managers: ${others[*]}"
+        fi
+    fi
+    
     return 0
 }
 
