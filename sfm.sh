@@ -43,6 +43,12 @@ DISTRO_NAME=""
 SFM_BEGIN="# >>> SFM >>>"
 SFM_END="# <<< SFM <<<"
 
+# Feature toggles (configured by wizard)
+ENABLE_CORE_FUNCTIONS=true      # extract, mkcd, psgrep, backup, myip, portcheck
+ENABLE_NAV_ALIASES=true         # .., ..., ...., ll, la, l
+ENABLE_SAFETY_ALIASES=true      # rm -i, cp -i, mv -i
+ENABLE_MISC_ALIASES=true        # c, h, ports, meminfo, psmem, pscpu, git shortcuts
+
 # ---------------------------
 # Logging
 # ---------------------------
@@ -362,6 +368,52 @@ check_dependencies() {
 }
 
 # ---------------------------
+# Configuration wizard (p10k-style Y/n)
+# ---------------------------
+config_wizard() {
+  # Skip wizard if non-interactive or batch/yes-to-all
+  if [[ "$BATCH_MODE" == true || "$YES_TO_ALL" == true || ! -t 0 ]]; then
+    log_info "Skipping configuration wizard (batch/yes-to-all or non-interactive)"
+    return 0
+  fi
+
+  printf '%b\n' "${BOLD}SFM configuration wizard${NC}"
+  printf '%b\n' "Answer the following questions with ${GREEN}y${NC} or ${RED}n${NC}."
+  printf '\n'
+
+  if ask_yn "Enable core helper functions (extract, mkcd, psgrep, backup, myip, portcheck)?"; then
+    ENABLE_CORE_FUNCTIONS=true
+  else
+    ENABLE_CORE_FUNCTIONS=false
+  fi
+
+  if ask_yn "Enable navigation + ls aliases (.., ..., ...., ll, la, l)?"; then
+    ENABLE_NAV_ALIASES=true
+  else
+    ENABLE_NAV_ALIASES=false
+  fi
+
+  if ask_yn "Enable safety aliases that prompt before rm/cp/mv?"; then
+    ENABLE_SAFETY_ALIASES=true
+  else
+    ENABLE_SAFETY_ALIASES=false
+  fi
+
+  if ask_yn "Enable misc helper aliases (c, h, ports, meminfo, psmem, pscpu, git shortcuts)?"; then
+    ENABLE_MISC_ALIASES=true
+  else
+    ENABLE_MISC_ALIASES=false
+  fi
+
+  printf '\n%b\n' "${BOLD}Summary:${NC}"
+  printf '  Core functions:      %s\n' "$( [[ "$ENABLE_CORE_FUNCTIONS"   == true ]] && echo 'yes' || echo 'no' )"
+  printf '  Nav + ls aliases:    %s\n' "$( [[ "$ENABLE_NAV_ALIASES"      == true ]] && echo 'yes' || echo 'no' )"
+  printf '  Safety aliases:      %s\n' "$( [[ "$ENABLE_SAFETY_ALIASES"   == true ]] && echo 'yes' || echo 'no' )"
+  printf '  Misc helper aliases: %s\n' "$( [[ "$ENABLE_MISC_ALIASES"     == true ]] && echo 'yes' || echo 'no' )"
+  printf '\n'
+}
+
+# ---------------------------
 # Validate generated file
 # ---------------------------
 validate_functions_file() {
@@ -388,8 +440,13 @@ generate_functions() {
   printf '%b\n' "${BOLD}Generating shell functions...${NC}"
   log "Generating functions file: $FUNCTIONS_FILE"
 
+  local tmp
+  tmp="$(mktemp)"
+  : >"$tmp"
+
   if [[ "$SHELL_NAME" == "fish" ]]; then
-    atomic_write "$FUNCTIONS_FILE" <<'EOF'
+    if [[ "$ENABLE_CORE_FUNCTIONS" == true ]]; then
+      cat <<'EOF' >>"$tmp"
 function extract
     if test (count $argv) -eq 0
         echo "Usage: extract <file>"
@@ -491,8 +548,10 @@ function portcheck
     end
 end
 EOF
+    fi
   else
-    atomic_write "$FUNCTIONS_FILE" <<'EOF'
+    if [[ "$ENABLE_CORE_FUNCTIONS" == true ]]; then
+      cat <<'EOF' >>"$tmp"
 extract() {
     if [ -z "${1:-}" ]; then
         echo "Usage: extract <file>"
@@ -581,7 +640,11 @@ portcheck() {
     fi
 }
 EOF
+    fi
   fi
+
+  atomic_write "$FUNCTIONS_FILE" <"$tmp"
+  rm -f "$tmp"
 
   printf '%b\n' "${GREEN}✓${NC} Functions file created: $FUNCTIONS_FILE"
   validate_functions_file "$FUNCTIONS_FILE"
@@ -593,8 +656,13 @@ generate_aliases() {
   printf '%b\n' "${BOLD}Generating shell aliases...${NC}"
   log "Generating aliases file: $ALIASES_FILE"
 
+  local tmp
+  tmp="$(mktemp)"
+  : >"$tmp"
+
   if [[ "$SHELL_NAME" == "fish" ]]; then
-    atomic_write "$ALIASES_FILE" <<'EOF'
+    if [[ "$ENABLE_NAV_ALIASES" == true ]]; then
+      cat <<'EOF' >>"$tmp"
 alias ..='cd ..'
 alias ...='cd ../..'
 alias ....='cd ../../..'
@@ -602,10 +670,20 @@ alias ....='cd ../../..'
 alias ll='ls -lh'
 alias la='ls -lAh'
 alias l='ls -CF'
+EOF
+    fi
+
+    if [[ "$ENABLE_SAFETY_ALIASES" == true ]]; then
+      cat <<'EOF' >>"$tmp"
 
 alias rm='rm -i'
 alias cp='cp -i'
 alias mv='mv -i'
+EOF
+    fi
+
+    if [[ "$ENABLE_MISC_ALIASES" == true ]]; then
+      cat <<'EOF' >>"$tmp"
 
 alias c='clear'
 alias h='history'
@@ -631,8 +709,10 @@ if command -v git >/dev/null
     alias gl='git log --oneline --graph --decorate'
 end
 EOF
+    fi
   else
-    atomic_write "$ALIASES_FILE" <<'EOF'
+    if [[ "$ENABLE_NAV_ALIASES" == true ]]; then
+      cat <<'EOF' >>"$tmp"
 alias ..='cd ..'
 alias ...='cd ../..'
 alias ....='cd ../../..'
@@ -640,10 +720,20 @@ alias ....='cd ../../..'
 alias ll='ls -lh'
 alias la='ls -lAh'
 alias l='ls -CF'
+EOF
+    fi
+
+    if [[ "$ENABLE_SAFETY_ALIASES" == true ]]; then
+      cat <<'EOF' >>"$tmp"
 
 alias rm='rm -i'
 alias cp='cp -i'
 alias mv='mv -i'
+EOF
+    fi
+
+    if [[ "$ENABLE_MISC_ALIASES" == true ]]; then
+      cat <<'EOF' >>"$tmp"
 
 alias c='clear'
 alias h='history'
@@ -669,7 +759,11 @@ if command -v git >/dev/null 2>&1; then
   alias gl='git log --oneline --graph --decorate'
 fi
 EOF
+    fi
   fi
+
+  atomic_write "$ALIASES_FILE" <"$tmp"
+  rm -f "$tmp"
 
   printf '%b\n' "${GREEN}✓${NC} Aliases file created: $ALIASES_FILE"
   log "Generated aliases file: $ALIASES_FILE"
@@ -812,6 +906,10 @@ setup_sfm() {
   detect_package_manager
   detect_shell
   check_dependencies
+
+  # p10k-style Y/n wizard
+  config_wizard
+
   generate_functions
   generate_aliases
   update_shell_config
