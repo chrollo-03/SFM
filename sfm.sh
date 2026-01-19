@@ -206,9 +206,9 @@ detect_package_manager() {
   case "$PKG_MANAGER" in
     apt)    PKG_INSTALL_CMD="sudo apt-get install -y" ;;
     dnf)    PKG_INSTALL_CMD="sudo dnf install -y" ;;
+    pacman) PKG_INSTALL_CMD="sudo pacman -S --noconfirm --needed" ;;
     yum)    PKG_INSTALL_CMD="sudo yum install -y" ;;
     yay)    PKG_INSTALL_CMD="yay -S --noconfirm --needed" ;;
-    pacman) PKG_INSTALL_CMD="sudo pacman -S --noconfirm --needed" ;;
     zypper) PKG_INSTALL_CMD="sudo zypper install -y" ;;
     apk)    PKG_INSTALL_CMD="sudo apk add" ;;
     none)   ;;
