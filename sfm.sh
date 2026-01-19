@@ -1,1078 +1,867 @@
 #!/bin/bash
-
 set -euo pipefail
 
-# Colors for better UX
+# ---------------------------
+# Colors (auto-disable if not tty / NO_COLOR)
+# ---------------------------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 BOLD='\033[1m'
 
+if [[ ! -t 1 || -n "${NO_COLOR:-}" ]]; then
+  RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; MAGENTA=""; NC=""; BOLD=""
+fi
+
+# ---------------------------
 # Configuration
+# ---------------------------
 SFM_DIR="$HOME/.sfm"
-FUNCTIONS_FILE="$SFM_DIR/functions"
-ALIASES_FILE="$SFM_DIR/aliases"
-CONFIG_FILE="$SFM_DIR/config"
+FUNCTIONS_FILE_BASE="$SFM_DIR/functions"
+ALIASES_FILE_BASE="$SFM_DIR/aliases"
 LOG_FILE="$SFM_DIR/setup.log"
 
-# Global variables
+BATCH_MODE=false
+YES_TO_ALL=false
+
+# If set by --shell, it overrides $SHELL detection
+TARGET_SHELL_OVERRIDE=""
+
 SHELL_NAME=""
 SHELL_CONFIG=""
-DISTRO=""
+FUNCTIONS_FILE=""
+ALIASES_FILE=""
+
 PKG_MANAGER=""
 PKG_INSTALL_CMD=""
+DISTRO_NAME=""
 
-# Create directory structure
-mkdir -p "$SFM_DIR"
-touch "$LOG_FILE"
+SFM_BEGIN="# >>> SFM >>>"
+SFM_END="# <<< SFM <<<"
 
-# Logging function
+# ---------------------------
+# Logging
+# ---------------------------
+ensure_log_ready() {
+  mkdir -p "$SFM_DIR"
+  touch "$LOG_FILE"
+}
+
 log() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" >> "$LOG_FILE"
+  local level="${2:-INFO}"
+  local msg="$1"
+  ensure_log_ready
+  printf '[%s] [%s] %s\n' "$(date +'%Y-%m-%d %H:%M:%S')" "$level" "$msg" >> "$LOG_FILE"
 }
 
-# Clear screen and show header
-show_header() {
-    clear
-    echo -e "${CYAN}${BOLD}"
-    echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║                                                            ║"
-    echo "║             SFM (Shell Function Manager) Setup             ║"
-    echo "║                                                            ║"
-    echo "╚════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
-    echo ""
-    echo -e "${YELLOW}This wizard will configure your shell environment.${NC}"
-    echo ""
+log_error() { log "$1" "ERROR"; printf '%b\n' "${RED}ERROR:${NC} $1" >&2; }
+log_warn()  { log "$1" "WARN";  printf '%b\n' "${YELLOW}WARNING:${NC} $1"; }
+log_info()  { log "$1" "INFO"; }
+
+# ---------------------------
+# UX helpers
+# ---------------------------
+spinner() {
+  local pid="$1"
+  local delay=0.1
+  local spinstr='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+  while ps -p "$pid" >/dev/null 2>&1; do
+    local temp="${spinstr#?}"
+    printf " [%s]  " "${spinstr%"$temp"}"
+    spinstr="$temp${spinstr%"$temp"}"
+    sleep "$delay"
+    printf "\b\b\b\b\b\b"
+  done
+  printf "    \b\b\b\b"
 }
 
-# Detect distribution
-detect_distro() {
-    log "Detecting distribution..."
-    
-    if [ -f /etc/os-release ]; then
-        . /etc/os-release
-        DISTRO="$ID"
-        echo -e "${GREEN}✓${NC} Distribution: ${BOLD}$PRETTY_NAME${NC}"
-    else
-        DISTRO="unknown"
-        echo -e "${YELLOW}⚠${NC} Could not detect distribution"
-    fi
-    
-    log "Distribution: $DISTRO"
-}
-
-# Detect package manager
-detect_package_manager() {
-    log "Detecting package manager..."
-    
-    local detected_managers=()
-    
-    # Check all available package managers
-    if command -v apt &> /dev/null; then
-        detected_managers+=("apt")
-    fi
-    if command -v dnf &> /dev/null; then
-        detected_managers+=("dnf")
-    fi
-    if command -v yum &> /dev/null; then
-        detected_managers+=("yum")
-    fi
-    if command -v yay &> /dev/null; then
-        detected_managers+=("yay")
-    fi
-    if command -v pacman &> /dev/null; then
-        detected_managers+=("pacman")
-    fi
-    if command -v zypper &> /dev/null; then
-        detected_managers+=("zypper")
-    fi
-    if command -v flatpak &> /dev/null; then
-        detected_managers+=("flatpak")
-    fi
-    if command -v apk &> /dev/null; then
-        detected_managers+=("apk")
-    fi
-    
-    # Handle no package managers found
-    if [ ${#detected_managers[@]} -eq 0 ]; then
-        PKG_MANAGER="none"
-        echo -e "${YELLOW}⚠${NC} No package manager detected"
-        log "No package manager detected"
-        return 1
-    fi
-    
-    # Select primary package manager (priority order)
-    if [[ " ${detected_managers[@]} " =~ " apt " ]]; then
-        PKG_MANAGER="apt"
-        PKG_INSTALL_CMD="sudo apt-get install -y"
-    elif [[ " ${detected_managers[@]} " =~ " dnf " ]]; then
-        PKG_MANAGER="dnf"
-        PKG_INSTALL_CMD="sudo dnf install -y"
-    elif [[ " ${detected_managers[@]} " =~ " yum " ]]; then
-        PKG_MANAGER="yum"
-        PKG_INSTALL_CMD="sudo yum install -y"
-    elif [[ " ${detected_managers[@]} " =~ " yay " ]]; then
-        PKG_MANAGER="yay"
-        PKG_INSTALL_CMD="yay -S --noconfirm"
-    elif [[ " ${detected_managers[@]} " =~ " pacman " ]]; then
-        PKG_MANAGER="pacman"
-        PKG_INSTALL_CMD="sudo pacman -S --noconfirm"
-    elif [[ " ${detected_managers[@]} " =~ " zypper " ]]; then
-        PKG_MANAGER="zypper"
-        PKG_INSTALL_CMD="sudo zypper install -y"
-    elif [[ " ${detected_managers[@]} " =~ " apk " ]]; then
-        PKG_MANAGER="apk"
-        PKG_INSTALL_CMD="sudo apk add"
-    elif [[ " ${detected_managers[@]} " =~ " flatpak " ]]; then
-        PKG_MANAGER="flatpak"
-        PKG_INSTALL_CMD="flatpak install -y"
-    fi
-    
-    # Display primary package manager
-    echo -e "${GREEN}✓${NC} Package manager: ${BOLD}$PKG_MANAGER${NC}"
-    log "Primary package manager: $PKG_MANAGER"
-    
-    # Display additional package managers if found
-    if [ ${#detected_managers[@]} -gt 1 ]; then
-        local others=()
-        for mgr in "${detected_managers[@]}"; do
-            if [ "$mgr" != "$PKG_MANAGER" ]; then
-                others+=("$mgr")
-            fi
-        done
-        if [ ${#others[@]} -gt 0 ]; then
-            echo -e "${BLUE}ℹ${NC} Also detected: ${others[*]}"
-            log "Additional package managers: ${others[*]}"
-        fi
-    fi
-    
-    return 0
-}
-
-# Detect shell
-detect_shell() {
-    log "Detecting shell..."
-    
-    if [ -z "${SHELL:-}" ]; then
-        echo -e "${RED}Error: Unable to determine shell${NC}"
-        log "ERROR: Unable to determine shell"
-        exit 1
-    fi
-    
-    case "$SHELL" in
-        */bash)
-            SHELL_NAME="bash"
-            SHELL_CONFIG="$HOME/.bashrc"
-            FUNCTIONS_FILE="${FUNCTIONS_FILE}.sh"
-            ALIASES_FILE="${ALIASES_FILE}.sh"
-            ;;
-        */zsh)
-            SHELL_NAME="zsh"
-            SHELL_CONFIG="$HOME/.zshrc"
-            FUNCTIONS_FILE="${FUNCTIONS_FILE}.sh"
-            ALIASES_FILE="${ALIASES_FILE}.sh"
-            ;;
-        */fish)
-            SHELL_NAME="fish"
-            SHELL_CONFIG="$HOME/.config/fish/config.fish"
-            FUNCTIONS_FILE="${FUNCTIONS_FILE}.fish"
-            ALIASES_FILE="${ALIASES_FILE}.fish"
-            mkdir -p "$HOME/.config/fish"
-            ;;
-        *)
-            echo -e "${RED}Unsupported shell: $SHELL${NC}"
-            log "ERROR: Unsupported shell: $SHELL"
-            exit 1
-            ;;
-    esac
-    
-    echo -e "${GREEN}✓${NC} Shell: ${BOLD}$SHELL_NAME${NC}"
-    echo -e "${GREEN}✓${NC} Config: ${BOLD}$SHELL_CONFIG${NC}"
-    log "Shell: $SHELL_NAME, Config: $SHELL_CONFIG"
-    echo ""
-}
-
-# Check and install dependencies
-check_dependencies() {
-    echo -e "${BOLD}Checking dependencies...${NC}"
-    log "Checking dependencies..."
-    
-    local deps="curl wget unzip tar gzip bzip2"
-    local missing_deps=()
-    
-    for dep in $deps; do
-        if ! command -v "$dep" &> /dev/null; then
-            missing_deps+=("$dep")
-            echo -e "${YELLOW}⚠${NC} Missing: $dep"
-        else
-            echo -e "${GREEN}✓${NC} Found: $dep"
-        fi
-    done
-    
-    if [ ${#missing_deps[@]} -gt 0 ]; then
-        echo ""
-        if [ "$PKG_MANAGER" != "none" ]; then
-            if ask_yn "Install missing dependencies (${missing_deps[*]})?"; then
-                for dep in "${missing_deps[@]}"; do
-                    echo -e "${CYAN}Installing $dep...${NC}"
-                    if $PKG_INSTALL_CMD "$dep" >> "$LOG_FILE" 2>&1; then
-                        echo -e "${GREEN}✓${NC} Installed: $dep"
-                        log "Installed: $dep"
-                    else
-                        echo -e "${RED}✗${NC} Failed to install: $dep"
-                        log "ERROR: Failed to install: $dep"
-                    fi
-                done
-            fi
-        else
-            echo -e "${YELLOW}Please install manually: ${missing_deps[*]}${NC}"
-        fi
-    fi
-    echo ""
-}
-
-# Ask yes/no question
 ask_yn() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$(echo -e ${CYAN}${prompt}${NC} [y/n]: )" response
-        case "$response" in
-            [Yy]*) return 0 ;;
-            [Nn]*) return 1 ;;
-            *) echo -e "${RED}Please answer y or n${NC}" ;;
-        esac
-    done
-}
+  local prompt="$1"
 
-# Show function description
-show_function() {
-    local title="$1"
-    local description="$2"
-    local code="$3"
-    
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}${title}${NC}"
-    echo -e "${description}"
-    echo ""
-    echo -e "${YELLOW}Preview:${NC}"
-    echo -e "${code}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
-}
+  if [[ "$YES_TO_ALL" == true ]]; then
+    return 0
+  fi
 
-# Initialize files based on shell
-init_files() {
-    log "Initializing configuration files for $SHELL_NAME..."
-    
-    if [ "$SHELL_NAME" = "fish" ]; then
-        cat > "$FUNCTIONS_FILE" << 'EOF'
-# SFM Functions - Auto-generated for Fish
-# Edit manually or re-run the wizard
-
-EOF
-        cat > "$ALIASES_FILE" << 'EOF'
-# SFM Aliases - Auto-generated for Fish
-# Edit manually or re-run the wizard
-
-EOF
-    else
-        cat > "$FUNCTIONS_FILE" << 'EOF'
-#!/bin/bash
-# SFM Functions - Auto-generated
-# Edit manually or re-run the wizard
-
-EOF
-        cat > "$ALIASES_FILE" << 'EOF'
-#!/bin/bash
-# SFM Aliases - Auto-generated
-# Edit manually or re-run the wizard
-
-EOF
-    fi
-}
-
-# Add function based on shell type
-add_function() {
-    local func_name="$1"
-    local bash_code="$2"
-    local fish_code="$3"
-    
-    if [ "$SHELL_NAME" = "fish" ]; then
-        echo "$fish_code" >> "$FUNCTIONS_FILE"
-    else
-        echo "$bash_code" >> "$FUNCTIONS_FILE"
-    fi
-    log "Added function: $func_name"
-}
-
-# Add alias based on shell type
-add_alias() {
-    local alias_name="$1"
-    local alias_value="$2"
-    
-    if [ "$SHELL_NAME" = "fish" ]; then
-        echo "alias $alias_name '$alias_value'" >> "$ALIASES_FILE"
-    else
-        echo "alias $alias_name='$alias_value'" >> "$ALIASES_FILE"
-    fi
-    log "Added alias: $alias_name"
-}
-
-# Configure functions
-configure_functions() {
-    echo -e "${BOLD}Configuring shell functions:${NC}"
-    echo ""
-    sleep 1
-
-    # Function 1: Extract archives
-    show_function \
-        "📦 Extract - Universal Archive Extractor" \
-        "Automatically detects and extracts any archive format\nUsage: extract <file>" \
-        "extract file.tar.gz"
-
-    if ask_yn "Add the 'extract' function?"; then
-        add_function "extract" \
-'# Universal archive extractor
-extract() {
-    if [ -z "$1" ]; then
-        echo "Usage: extract <file>"
-        return 1
-    fi
-    if [ ! -f "$1" ]; then
-        echo "Error: '\''$1'\'' is not a valid file"
-        return 1
-    fi
-    case "$1" in
-        *.tar.bz2)   tar xjf "$1"     ;;
-        *.tar.gz)    tar xzf "$1"     ;;
-        *.bz2)       bunzip2 "$1"     ;;
-        *.rar)       unrar x "$1"     ;;
-        *.gz)        gunzip "$1"      ;;
-        *.tar)       tar xf "$1"      ;;
-        *.tbz2)      tar xjf "$1"     ;;
-        *.tgz)       tar xzf "$1"     ;;
-        *.zip)       unzip "$1"       ;;
-        *.Z)         uncompress "$1"  ;;
-        *.7z)        7z x "$1"        ;;
-        *.tar.xz)    tar xJf "$1"     ;;
-        *.xz)        unxz "$1"        ;;
-        *)           echo "Error: '\''$1'\'' cannot be extracted via extract()" ;;
+  local response=""
+  while true; do
+    printf "%b" "${CYAN}${prompt}${NC} [y/n]: "
+    IFS= read -r response
+    case "$response" in
+      [Yy]* ) return 0 ;;
+      [Nn]* ) return 1 ;;
+      * ) printf '%b\n' "${RED}Please answer y or n${NC}" ;;
     esac
+  done
 }
-' \
-'# Universal archive extractor
+
+show_help() {
+  cat <<EOF
+${BOLD}SFM (Shell Function Manager) Setup${NC}
+
+${BOLD}Usage:${NC} $0 [OPTIONS]
+
+${BOLD}Options:${NC}
+  -b, --batch              Batch mode (assume yes)
+  -y, --yes                Answer yes to prompts
+  -h, --help               Show this help
+  --uninstall, --rollback  Remove SFM config + optionally delete ~/.sfm
+  --shell <bash|zsh|fish>  Force target shell (otherwise uses \$SHELL)
+
+${BOLD}What is SFM?${NC}
+Installs useful shell functions + aliases:
+  • extract, mkcd, psgrep, backup, myip, portcheck
+EOF
+}
+
+error_handler() {
+  local line_no="$1"
+  printf '%b\n' "${RED}Error on line $line_no${NC}" >&2
+  printf '%b\n' "${YELLOW}Check $LOG_FILE for details${NC}" >&2
+  log "Script failed at line $line_no" "ERROR"
+
+  # If stdin isn't interactive, don't prompt
+  if [[ -t 0 ]]; then
+    if ask_yn "View last 20 lines of the log?"; then
+      tail -20 "$LOG_FILE" || true
+    fi
+  fi
+  exit 1
+}
+
+trap 'error_handler ${LINENO}' ERR
+
+# ---------------------------
+# Atomic file write
+# ---------------------------
+atomic_write() {
+  local target="$1"
+  local tmp
+  tmp="$(mktemp)"
+  cat >"$tmp"
+  chmod 0644 "$tmp"
+  mkdir -p "$(dirname "$target")"
+  mv "$tmp" "$target"
+}
+
+# ---------------------------
+# Detect distro
+# ---------------------------
+detect_distro() {
+  log "Detecting distribution..."
+  if [[ -f /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    DISTRO_NAME="${NAME:-Unknown}"
+    printf '%b\n\n' "${GREEN}✓${NC} Distribution: ${BOLD}${DISTRO_NAME}${NC}"
+    log "Distribution: $DISTRO_NAME"
+  else
+    DISTRO_NAME="Unknown"
+    printf '%b\n\n' "${YELLOW}⚠${NC} Could not detect distribution"
+    log "Could not detect distribution" "WARN"
+  fi
+}
+
+# ---------------------------
+# Detect package manager
+# - system managers for dependencies
+# - universal managers only informational
+# ---------------------------
+detect_package_manager() {
+  log "Detecting package manager..."
+
+  local system_managers=()
+  local universal_managers=()
+
+  command -v apt    >/dev/null 2>&1 && system_managers+=("apt")
+  command -v dnf    >/dev/null 2>&1 && system_managers+=("dnf")
+  command -v yum    >/dev/null 2>&1 && system_managers+=("yum")
+  command -v yay    >/dev/null 2>&1 && system_managers+=("yay")
+  command -v pacman >/dev/null 2>&1 && system_managers+=("pacman")
+  command -v zypper >/dev/null 2>&1 && system_managers+=("zypper")
+  command -v apk    >/dev/null 2>&1 && system_managers+=("apk")
+
+  command -v flatpak >/dev/null 2>&1 && universal_managers+=("flatpak")
+  command -v snap    >/dev/null 2>&1 && universal_managers+=("snap")
+
+  PKG_MANAGER="none"
+  PKG_INSTALL_CMD=""
+
+  # Pick a primary SYSTEM package manager by priority
+  for mgr in apt dnf yum yay pacman zypper apk; do
+    if [[ " ${system_managers[*]} " == *" $mgr "* ]]; then
+      PKG_MANAGER="$mgr"
+      break
+    fi
+  done
+
+  case "$PKG_MANAGER" in
+    apt)    PKG_INSTALL_CMD="sudo apt-get install -y" ;;
+    dnf)    PKG_INSTALL_CMD="sudo dnf install -y" ;;
+    yum)    PKG_INSTALL_CMD="sudo yum install -y" ;;
+    yay)    PKG_INSTALL_CMD="yay -S --noconfirm --needed" ;;
+    pacman) PKG_INSTALL_CMD="sudo pacman -S --noconfirm --needed" ;;
+    zypper) PKG_INSTALL_CMD="sudo zypper install -y" ;;
+    apk)    PKG_INSTALL_CMD="sudo apk add" ;;
+    none)   ;;
+  esac
+
+  if [[ "$PKG_MANAGER" == "none" ]]; then
+    printf '%b\n' "${YELLOW}⚠${NC} No system package manager detected (deps cannot be auto-installed)"
+    log "No system package manager detected" "WARN"
+  else
+    printf '%b\n' "${GREEN}✓${NC} Package manager: ${BOLD}${PKG_MANAGER}${NC}"
+    log "Primary package manager: $PKG_MANAGER"
+  fi
+
+  local all_managers=("${system_managers[@]}" "${universal_managers[@]}")
+  if (( ${#all_managers[@]} > 0 )); then
+    local extras=()
+    for m in "${all_managers[@]}"; do
+      [[ "$m" != "$PKG_MANAGER" ]] && extras+=("$m")
+    done
+    if (( ${#extras[@]} > 0 )); then
+      printf '%b\n' "${BLUE}ℹ${NC} Also detected: ${extras[*]}"
+      log "Additional package managers: ${extras[*]}"
+    fi
+  fi
+
+  printf '\n'
+  return 0
+}
+
+# ---------------------------
+# Detect shell (IMPORTANT FIX: use $SHELL, not BASH_VERSION)
+# ---------------------------
+detect_shell() {
+  log "Detecting target shell..."
+
+  local shell_guess=""
+  if [[ -n "$TARGET_SHELL_OVERRIDE" ]]; then
+    shell_guess="$TARGET_SHELL_OVERRIDE"
+  else
+    shell_guess="$(basename "${SHELL:-bash}")"
+  fi
+
+  case "$shell_guess" in
+    bash|zsh|fish) ;;
+    *)
+      log_warn "Unsupported/unknown \$SHELL='$shell_guess' -> defaulting to bash"
+      shell_guess="bash"
+      ;;
+  esac
+
+  SHELL_NAME="$shell_guess"
+
+  case "$SHELL_NAME" in
+    bash)
+      SHELL_CONFIG="$HOME/.bashrc"
+      [[ -f "$HOME/.bash_profile" ]] && SHELL_CONFIG="$HOME/.bash_profile"
+      FUNCTIONS_FILE="${FUNCTIONS_FILE_BASE}.sh"
+      ALIASES_FILE="${ALIASES_FILE_BASE}.sh"
+      ;;
+    zsh)
+      SHELL_CONFIG="$HOME/.zshrc"
+      FUNCTIONS_FILE="${FUNCTIONS_FILE_BASE}.sh"
+      ALIASES_FILE="${ALIASES_FILE_BASE}.sh"
+      ;;
+    fish)
+      # We'll use conf.d (smooth + no editing config.fish needed)
+      SHELL_CONFIG="$HOME/.config/fish/conf.d/sfm.fish"
+      FUNCTIONS_FILE="${FUNCTIONS_FILE_BASE}.fish"
+      ALIASES_FILE="${ALIASES_FILE_BASE}.fish"
+      mkdir -p "$HOME/.config/fish/conf.d"
+      ;;
+  esac
+
+  printf '%b\n' "${GREEN}✓${NC} Shell: ${BOLD}${SHELL_NAME}${NC}"
+  printf '%b\n\n' "${GREEN}✓${NC} Config target: ${BOLD}${SHELL_CONFIG}${NC}"
+  log "Shell: $SHELL_NAME, Config: $SHELL_CONFIG"
+}
+
+# ---------------------------
+# Dependencies
+# ---------------------------
+install_missing_deps() {
+  local missing=("$@")
+
+  if (( ${#missing[@]} == 0 )); then
+    return 0
+  fi
+
+  if [[ "$PKG_MANAGER" == "none" ]]; then
+    printf '%b\n' "${YELLOW}Please install manually:${NC} ${missing[*]}"
+    log_warn "Manual install required: ${missing[*]}"
+    return 0
+  fi
+
+  if ! ask_yn "Install missing dependencies (${missing[*]})?"; then
+    log_warn "User skipped installing deps: ${missing[*]}"
+    return 0
+  fi
+
+  printf '%b\n' "${CYAN}Installing: ${missing[*]}...${NC}"
+  log_info "Installing deps: ${missing[*]}"
+
+  if [[ "$BATCH_MODE" == false ]]; then
+    # run with spinner
+    # shellcheck disable=SC2086
+    $PKG_INSTALL_CMD "${missing[@]}" >>"$LOG_FILE" 2>&1 &
+    local pid=$!
+    spinner "$pid"
+    if wait "$pid"; then
+      printf '%b\n' "${GREEN}✓${NC} Dependencies installed"
+      log_info "Deps installed successfully"
+    else
+      printf '%b\n' "${RED}✗${NC} Dependency install failed. See $LOG_FILE"
+      log_error "Failed installing deps"
+    fi
+  else
+    # shellcheck disable=SC2086
+    if $PKG_INSTALL_CMD "${missing[@]}" >>"$LOG_FILE" 2>&1; then
+      printf '%b\n' "${GREEN}✓${NC} Dependencies installed"
+      log_info "Deps installed successfully"
+    else
+      printf '%b\n' "${RED}✗${NC} Dependency install failed. See $LOG_FILE"
+      log_error "Failed installing deps"
+    fi
+  fi
+}
+
+check_dependencies() {
+  printf '%b\n' "${BOLD}Checking dependencies...${NC}"
+  log "Checking dependencies..."
+
+  local missing=()
+
+  # Required tools for core workflow
+  for dep in tar gzip bzip2 unzip; do
+    if ! command -v "$dep" >/dev/null 2>&1; then
+      missing+=("$dep")
+      printf '%b\n' "${YELLOW}⚠${NC} Missing: $dep"
+    else
+      printf '%b\n' "${GREEN}✓${NC} Found: $dep"
+    fi
+  done
+
+  # curl OR wget is enough
+  if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+    missing+=("curl")
+    printf '%b\n' "${YELLOW}⚠${NC} Missing: curl (or wget)"
+  else
+    command -v curl >/dev/null 2>&1 && printf '%b\n' "${GREEN}✓${NC} Found: curl"
+    command -v wget >/dev/null 2>&1 && printf '%b\n' "${GREEN}✓${NC} Found: wget"
+  fi
+
+  printf '\n'
+  install_missing_deps "${missing[@]}"
+  printf '\n'
+}
+
+# ---------------------------
+# Validate generated file
+# ---------------------------
+validate_functions_file() {
+  local file="$1"
+
+  if [[ "$SHELL_NAME" == "bash" || "$SHELL_NAME" == "zsh" ]]; then
+    if bash -n "$file" >/dev/null 2>&1; then
+      printf '%b\n' "${GREEN}✓${NC} Syntax check passed"
+      log_info "Syntax validation passed for $file"
+      return 0
+    else
+      printf '%b\n' "${RED}✗${NC} Syntax errors detected in $file"
+      log_error "Syntax validation failed for $file"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# ---------------------------
+# Generate functions + aliases
+# ---------------------------
+generate_functions() {
+  printf '%b\n' "${BOLD}Generating shell functions...${NC}"
+  log "Generating functions file: $FUNCTIONS_FILE"
+
+  if [[ "$SHELL_NAME" == "fish" ]]; then
+    atomic_write "$FUNCTIONS_FILE" <<'EOF'
 function extract
     if test (count $argv) -eq 0
         echo "Usage: extract <file>"
         return 1
     end
+
     if not test -f $argv[1]
-        echo "Error: '\''$argv[1]'\'' is not a valid file"
+        echo "Error: '$argv[1]' is not a valid file"
         return 1
     end
+
     switch $argv[1]
-        case "*.tar.bz2"
+        case '*.tar.bz2'
             tar xjf $argv[1]
-        case "*.tar.gz"
+        case '*.tar.gz'
             tar xzf $argv[1]
-        case "*.bz2"
+        case '*.bz2'
             bunzip2 $argv[1]
-        case "*.gz"
+        case '*.rar'
+            unrar x $argv[1]
+        case '*.gz'
             gunzip $argv[1]
-        case "*.tar"
+        case '*.tar'
             tar xf $argv[1]
-        case "*.zip"
+        case '*.tbz2'
+            tar xjf $argv[1]
+        case '*.tgz'
+            tar xzf $argv[1]
+        case '*.zip'
             unzip $argv[1]
-        case "*.7z"
+        case '*.Z'
+            uncompress $argv[1]
+        case '*.7z'
             7z x $argv[1]
-        case "*.tar.xz"
-            tar xJf $argv[1]
-        case "*"
-            echo "Error: '\''$argv[1]'\'' cannot be extracted"
+        case '*.tar.xz'
+            tar xf $argv[1]
+        case '*'
+            echo "Error: '$argv[1]' cannot be extracted via extract()"
+            return 1
     end
 end
-'
-        echo -e "${GREEN}✓${NC} Added extract function"
-        
-        if ask_yn "  Add alias 'ex' for extract?"; then
-            add_alias "ex" "extract"
-            echo -e "${GREEN}  ✓${NC} Added alias: ex"
-        fi
-    fi
-    echo ""
 
-    # Function 2: mkcd
-    show_function \
-        "📁 Mkcd - Make Directory and Enter" \
-        "Creates a directory and immediately changes into it\nUsage: mkcd <dirname>" \
-        "mkcd new-project"
-
-    if ask_yn "Add the 'mkcd' function?"; then
-        add_function "mkcd" \
-'# Create directory and cd into it
-mkcd() {
-    if [ -z "$1" ]; then
-        echo "Usage: mkcd <directory>"
-        return 1
-    fi
-    mkdir -p "$1" && cd "$1"
-}
-' \
-'# Create directory and cd into it
 function mkcd
     if test (count $argv) -eq 0
-        echo "Usage: mkcd <directory>"
+        echo "Usage: mkcd <dir>"
         return 1
     end
     mkdir -p $argv[1]; and cd $argv[1]
 end
-'
-        echo -e "${GREEN}✓${NC} Added mkcd function"
-    fi
-    echo ""
 
-    # Function 3: psgrep
-    show_function \
-        "🔍 Psgrep - Find Process by Name" \
-        "Searches running processes by name\nUsage: psgrep <process_name>" \
-        "psgrep nginx"
-
-    if ask_yn "Add the 'psgrep' function?"; then
-        add_function "psgrep" \
-'# Find process by name
-psgrep() {
-    if [ -z "$1" ]; then
-        echo "Usage: psgrep <process_name>"
-        return 1
-    fi
-    ps aux | grep -v grep | grep -i -e VSZ -e "$1"
-}
-' \
-'# Find process by name
 function psgrep
     if test (count $argv) -eq 0
-        echo "Usage: psgrep <process_name>"
+        echo "Usage: psgrep <pattern>"
         return 1
     end
     ps aux | grep -v grep | grep -i -e VSZ -e $argv[1]
 end
-'
-        echo -e "${GREEN}✓${NC} Added psgrep function"
-        
-        if ask_yn "  Add alias 'psg' for psgrep?"; then
-            add_alias "psg" "psgrep"
-            echo -e "${GREEN}  ✓${NC} Added alias: psg"
-        fi
-    fi
-    echo ""
 
-    # Function 4: backup
-    show_function \
-        "💾 Backup - Quick File Backup" \
-        "Creates a timestamped backup of a file or directory\nUsage: backup <file_or_dir>" \
-        "backup important.conf"
-
-    if ask_yn "Add the 'backup' function?"; then
-        add_function "backup" \
-'# Quick backup with timestamp
-backup() {
-    if [ -z "$1" ]; then
-        echo "Usage: backup <file_or_directory>"
-        return 1
-    fi
-    if [ -e "$1" ]; then
-        local backup_name="${1}.backup.$(date +%Y%m%d_%H%M%S)"
-        cp -r "$1" "$backup_name"
-        echo "Backup created: $backup_name"
-    else
-        echo "Error: $1 does not exist"
-        return 1
-    fi
-}
-' \
-'# Quick backup with timestamp
 function backup
     if test (count $argv) -eq 0
         echo "Usage: backup <file_or_directory>"
         return 1
     end
-    if test -e $argv[1]
-        set backup_name "$argv[1].backup."(date +%Y%m%d_%H%M%S)
-        cp -r $argv[1] $backup_name
-        echo "Backup created: $backup_name"
-    else
-        echo "Error: $argv[1] does not exist"
-        return 1
-    end
+
+    set target $argv[1]
+    set timestamp (date +%Y%m%d_%H%M%S)
+    cp -r "$target" "$target.backup_$timestamp"
+    echo "Backup created: $target.backup_$timestamp"
 end
-'
-        echo -e "${GREEN}✓${NC} Added backup function"
-        
-        if ask_yn "  Add alias 'bak' for backup?"; then
-            add_alias "bak" "backup"
-            echo -e "${GREEN}  ✓${NC} Added alias: bak"
-        fi
-    fi
-    echo ""
 
-    # Function 5: myip
-    show_function \
-        "🌐 Myip - Show Network Information" \
-        "Displays local and public IP addresses\nUsage: myip" \
-        "myip"
-
-    if ask_yn "Add the 'myip' function?"; then
-        add_function "myip" \
-'# Show network information
-myip() {
-    echo "Local IP addresses:"
-    if command -v hostname &> /dev/null; then
-        hostname -I 2>/dev/null || ip addr show | grep "inet " | grep -v 127.0.0.1 | awk '\''{print $2}'\''
-    else
-        ip addr show | grep "inet " | grep -v 127.0.0.1 | awk '\''{print $2}'\''
-    fi
-    echo ""
-    echo "Public IP address:"
-    if command -v curl &> /dev/null; then
-        curl -s ifconfig.me || curl -s icanhazip.com || echo "Unable to determine public IP"
-    elif command -v wget &> /dev/null; then
-        wget -qO- ifconfig.me || echo "Unable to determine public IP"
-    else
-        echo "curl or wget required to determine public IP"
-    fi
-}
-' \
-'# Show network information
 function myip
-    echo "Local IP addresses:"
-    if command -v hostname &> /dev/null
-        hostname -I 2>/dev/null; or ip addr show | grep "inet " | grep -v 127.0.0.1 | awk '\''{print $2}'\''
-    else
-        ip addr show | grep "inet " | grep -v 127.0.0.1 | awk '\''{print $2}'\''
-    end
+    echo "Local IP:"
+    hostname -I 2>/dev/null; or ip addr show | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | cut -d/ -f1
     echo ""
-    echo "Public IP address:"
-    if command -v curl &> /dev/null
-        curl -s ifconfig.me; or echo "Unable to determine public IP"
-    else if command -v wget &> /dev/null
-        wget -qO- ifconfig.me; or echo "Unable to determine public IP"
+    echo "Public IP:"
+    if command -v curl >/dev/null
+        curl -s ifconfig.me
+    else if command -v wget >/dev/null
+        wget -qO- ifconfig.me
     else
         echo "curl or wget required"
     end
-end
-'
-        echo -e "${GREEN}✓${NC} Added myip function"
-    fi
     echo ""
+end
 
-    # Function 6: portcheck
-    show_function \
-        "🔌 Portcheck - Check Port Status" \
-        "Checks if a specific port is listening (requires sudo)\nUsage: portcheck <port>" \
-        "portcheck 80"
-
-    if ask_yn "Add the 'portcheck' function?"; then
-        add_function "portcheck" \
-'# Check what'\''s listening on a port
-portcheck() {
-    if [ -z "$1" ]; then
-        echo "Usage: portcheck <port>"
-        return 1
-    fi
-    echo "Checking port $1..."
-    if command -v lsof &> /dev/null; then
-        sudo lsof -i ":$1" || echo "Port $1 is not in use"
-    elif command -v ss &> /dev/null; then
-        sudo ss -tulpn | grep ":$1" || echo "Port $1 is not in use"
-    else
-        echo "lsof or ss required for port checking"
-        return 1
-    fi
-}
-' \
-'# Check what'\''s listening on a port
 function portcheck
     if test (count $argv) -eq 0
         echo "Usage: portcheck <port>"
         return 1
     end
-    echo "Checking port $argv[1]..."
-    if command -v lsof &> /dev/null
-        sudo lsof -i ":$argv[1]"; or echo "Port $argv[1] is not in use"
-    else if command -v ss &> /dev/null
-        sudo ss -tulpn | grep ":$argv[1]"; or echo "Port $argv[1] is not in use"
+
+    if command -v lsof >/dev/null
+        sudo lsof -i :$argv[1]
+    else if command -v ss >/dev/null
+        ss -tulpn | grep :$argv[1]
     else
         echo "lsof or ss required"
         return 1
     end
 end
-'
-        echo -e "${GREEN}✓${NC} Added portcheck function"
+EOF
+  else
+    atomic_write "$FUNCTIONS_FILE" <<'EOF'
+extract() {
+    if [ -z "${1:-}" ]; then
+        echo "Usage: extract <file>"
+        return 1
+    fi
+
+    if [ ! -f "$1" ]; then
+        echo "Error: '$1' is not a valid file"
+        return 1
+    fi
+
+    case "$1" in
+        *.tar.bz2)   tar xjf "$1"    ;;
+        *.tar.gz)    tar xzf "$1"    ;;
+        *.bz2)       bunzip2 "$1"    ;;
+        *.rar)       unrar x "$1"    ;;
+        *.gz)        gunzip "$1"     ;;
+        *.tar)       tar xf "$1"     ;;
+        *.tbz2)      tar xjf "$1"    ;;
+        *.tgz)       tar xzf "$1"    ;;
+        *.zip)       unzip "$1"      ;;
+        *.Z)         uncompress "$1" ;;
+        *.7z)        7z x "$1"       ;;
+        *.tar.xz)    tar xf "$1"     ;;
+        *)           echo "Error: '$1' cannot be extracted via extract()" ; return 1 ;;
+    esac
+}
+
+mkcd() {
+    if [ -z "${1:-}" ]; then
+        echo "Usage: mkcd <dir>"
+        return 1
+    fi
+    mkdir -p "$1" && cd "$1"
+}
+
+psgrep() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: psgrep <pattern>"
+        return 1
+    fi
+    ps aux | grep -v grep | grep -i -e VSZ -e "$@"
+}
+
+backup() {
+    if [ -z "${1:-}" ]; then
+        echo "Usage: backup <file_or_directory>"
+        return 1
+    fi
+
+    local target="$1"
+    local timestamp
+    timestamp="$(date +%Y%m%d_%H%M%S)"
+    cp -r "$target" "$target.backup_$timestamp"
+    echo "Backup created: $target.backup_$timestamp"
+}
+
+myip() {
+    echo "Local IP:"
+    hostname -I 2>/dev/null || ip addr show | grep "inet " | grep -v 127.0.0.1 | awk '{print $2}' | cut -d/ -f1
+    echo ""
+    echo "Public IP:"
+    if command -v curl >/dev/null 2>&1; then
+        curl -s ifconfig.me
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- ifconfig.me
+    else
+        echo "curl or wget required"
     fi
     echo ""
+}
 
-    # Custom function builder
-    if ask_yn "Would you like to create a custom function?"; then
-        create_custom_function
+portcheck() {
+    if [ -z "${1:-}" ]; then
+        echo "Usage: portcheck <port>"
+        return 1
+    fi
+
+    if command -v lsof >/dev/null 2>&1; then
+        sudo lsof -i :"$1"
+    elif command -v ss >/dev/null 2>&1; then
+        ss -tulpn | grep ":$1"
+    else
+        echo "lsof or ss required"
+        return 1
     fi
 }
-
-# Create custom function interactively
-create_custom_function() {
-    echo ""
-    echo -e "${MAGENTA}${BOLD}Custom Function Builder${NC}"
-    echo -e "${YELLOW}Leave name blank to finish${NC}"
-    echo ""
-    
-    while true; do
-        read -p "$(echo -e ${CYAN}Function name:${NC} )" func_name
-        [ -z "$func_name" ] && break
-        
-        read -p "$(echo -e ${CYAN}Description:${NC} )" func_desc
-        read -p "$(echo -e ${CYAN}Command to execute:${NC} )" func_cmd
-        
-        if [ "$SHELL_NAME" = "fish" ]; then
-            cat >> "$FUNCTIONS_FILE" << EOF
-
-# $func_desc
-function $func_name
-    $func_cmd
-end
 EOF
-        else
-            cat >> "$FUNCTIONS_FILE" << EOF
+  fi
 
-# $func_desc
-$func_name() {
-    $func_cmd
-}
-EOF
-        fi
-        
-        echo -e "${GREEN}✓${NC} Added custom function: $func_name"
-        log "Added custom function: $func_name"
-        echo ""
-        
-        if ! ask_yn "Add another custom function?"; then
-            break
-        fi
-    done
+  printf '%b\n' "${GREEN}✓${NC} Functions file created: $FUNCTIONS_FILE"
+  validate_functions_file "$FUNCTIONS_FILE"
+  log "Generated functions file: $FUNCTIONS_FILE"
+  printf '\n'
 }
 
-# Configure aliases
-configure_aliases() {
-    echo -e "${BOLD}Configuring aliases:${NC}"
-    echo ""
+generate_aliases() {
+  printf '%b\n' "${BOLD}Generating shell aliases...${NC}"
+  log "Generating aliases file: $ALIASES_FILE"
 
-    # Navigation aliases
-    echo -e "${BLUE}Navigation shortcuts:${NC}"
-    if ask_yn "Add quick navigation aliases? (.. ... .... etc.)"; then
-        if [ "$SHELL_NAME" = "fish" ]; then
-            cat >> "$ALIASES_FILE" << 'EOF'
-
-# Navigation
-alias .. 'cd ..'
-alias ... 'cd ../..'
-alias .... 'cd ../../..'
-alias ..... 'cd ../../../..'
-EOF
-        else
-            cat >> "$ALIASES_FILE" << 'EOF'
-
-# Navigation
+  if [[ "$SHELL_NAME" == "fish" ]]; then
+    atomic_write "$ALIASES_FILE" <<'EOF'
 alias ..='cd ..'
 alias ...='cd ../..'
 alias ....='cd ../../..'
-alias .....='cd ../../../..'
-EOF
-        fi
-        echo -e "${GREEN}✓${NC} Added navigation aliases"
-        log "Added navigation aliases"
-    fi
-    echo ""
 
-    # Safety aliases
-    echo -e "${BLUE}Safety aliases:${NC}"
-    if ask_yn "Add safe rm/cp/mv aliases? (interactive prompts)"; then
-        if [ "$SHELL_NAME" = "fish" ]; then
-            cat >> "$ALIASES_FILE" << 'EOF'
+alias ll='ls -lh'
+alias la='ls -lAh'
+alias l='ls -CF'
 
-# Safety
-alias rm 'rm -i'
-alias cp 'cp -i'
-alias mv 'mv -i'
-EOF
-        else
-            cat >> "$ALIASES_FILE" << 'EOF'
-
-# Safety
 alias rm='rm -i'
 alias cp='cp -i'
 alias mv='mv -i'
+
+alias c='clear'
+alias h='history'
+
+if command -v ss >/dev/null
+    alias ports='ss -tulpen'
+else if command -v netstat >/dev/null
+    alias ports='netstat -tulanp'
+end
+
+if command -v free >/dev/null
+    alias meminfo='free -m -l -t'
+end
+
+alias psmem='ps auxf | sort -nr -k 4'
+alias pscpu='ps auxf | sort -nr -k 3'
+
+if command -v git >/dev/null
+    alias gs='git status'
+    alias ga='git add'
+    alias gc='git commit'
+    alias gp='git push'
+    alias gl='git log --oneline --graph --decorate'
+end
 EOF
-        fi
-        echo -e "${GREEN}✓${NC} Added safety aliases"
-        log "Added safety aliases"
-    fi
-    echo ""
+  else
+    atomic_write "$ALIASES_FILE" <<'EOF'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
 
-    # ls aliases
-    echo -e "${BLUE}ls variants:${NC}"
-    if ask_yn "Add enhanced ls aliases? (ll, la, lt, etc.)"; then
-        if [ "$SHELL_NAME" = "fish" ]; then
-            cat >> "$ALIASES_FILE" << 'EOF'
-
-# ls variants
-alias ll 'ls -lh'
-alias la 'ls -lAh'
-alias lt 'ls -lth'
-alias l 'ls -CF'
-alias lsd 'ls -l | grep "^d"'
-EOF
-        else
-            cat >> "$ALIASES_FILE" << 'EOF'
-
-# ls variants
 alias ll='ls -lh'
 alias la='ls -lAh'
-alias lt='ls -lth'
 alias l='ls -CF'
-alias lsd='ls -l | grep "^d"'
+
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+
+alias c='clear'
+alias h='history'
+
+if command -v ss >/dev/null 2>&1; then
+  alias ports='ss -tulpen'
+elif command -v netstat >/dev/null 2>&1; then
+  alias ports='netstat -tulanp'
+fi
+
+if command -v free >/dev/null 2>&1; then
+  alias meminfo='free -m -l -t'
+fi
+
+alias psmem='ps auxf | sort -nr -k 4'
+alias pscpu='ps auxf | sort -nr -k 3'
+
+if command -v git >/dev/null 2>&1; then
+  alias gs='git status'
+  alias ga='git add'
+  alias gc='git commit'
+  alias gp='git push'
+  alias gl='git log --oneline --graph --decorate'
+fi
 EOF
-        fi
-        echo -e "${GREEN}✓${NC} Added ls aliases"
-        log "Added ls aliases"
-    fi
-    echo ""
+  fi
 
-    # Git aliases
-    if command -v git &> /dev/null; then
-        echo -e "${BLUE}Git shortcuts:${NC}"
-        if ask_yn "Add common git aliases? (gs, ga, gc, gp, etc.)"; then
-            if [ "$SHELL_NAME" = "fish" ]; then
-                cat >> "$ALIASES_FILE" << 'EOF'
-
-# Git shortcuts
-alias gs 'git status'
-alias ga 'git add'
-alias gc 'git commit'
-alias gp 'git push'
-alias gl 'git log --oneline --graph --decorate'
-alias gd 'git diff'
-alias gco 'git checkout'
-alias gb 'git branch'
-EOF
-            else
-                cat >> "$ALIASES_FILE" << 'EOF'
-
-# Git shortcuts
-alias gs='git status'
-alias ga='git add'
-alias gc='git commit'
-alias gp='git push'
-alias gl='git log --oneline --graph --decorate'
-alias gd='git diff'
-alias gco='git checkout'
-alias gb='git branch'
-EOF
-            fi
-            echo -e "${GREEN}✓${NC} Added git aliases"
-            log "Added git aliases"
-        fi
-        echo ""
-    fi
-
-    # System monitoring aliases
-    echo -e "${BLUE}System monitoring:${NC}"
-    if ask_yn "Add system monitoring aliases? (df, free, htop)"; then
-        if [ "$SHELL_NAME" = "fish" ]; then
-            cat >> "$ALIASES_FILE" << 'EOF'
-
-# System monitoring
-alias df 'df -h'
-alias free 'free -h'
-alias psa 'ps auxf'
-alias meminfo 'free -m -l -t'
-alias cpuinfo 'lscpu'
-EOF
-        else
-            cat >> "$ALIASES_FILE" << 'EOF'
-
-# System monitoring
-alias df='df -h'
-alias free='free -h'
-alias psa='ps auxf'
-alias meminfo='free -m -l -t'
-alias cpuinfo='lscpu'
-EOF
-        fi
-        echo -e "${GREEN}✓${NC} Added system aliases"
-        log "Added system aliases"
-    fi
-    echo ""
-
-    # Network aliases
-    echo -e "${BLUE}Network utilities:${NC}"
-    if ask_yn "Add network utility aliases?"; then
-        if [ "$SHELL_NAME" = "fish" ]; then
-            cat >> "$ALIASES_FILE" << 'EOF'
-
-# Network utilities
-alias ports 'netstat -tulanp'
-alias ping 'ping -c 5'
-alias wget 'wget -c'
-EOF
-        else
-            cat >> "$ALIASES_FILE" << 'EOF'
-
-# Network utilities
-alias ports='netstat -tulanp'
-alias ping='ping -c 5'
-alias wget='wget -c'
-EOF
-        fi
-        echo -e "${GREEN}✓${NC} Added network aliases"
-        log "Added network aliases"
-    fi
-    echo ""
+  printf '%b\n' "${GREEN}✓${NC} Aliases file created: $ALIASES_FILE"
+  log "Generated aliases file: $ALIASES_FILE"
+  printf '\n'
 }
 
-# Update shell configuration
+# ---------------------------
+# Config wiring (idempotent)
+# - fish: write conf.d/sfm.fish (best practice)
+# - bash/zsh: add a marked block to rc
+# ---------------------------
 update_shell_config() {
-    echo -e "${BOLD}Updating shell configuration...${NC}"
-    echo ""
-    
-    if ask_yn "Automatically source SFM in your $SHELL_CONFIG?"; then
-        # Backup existing config
-        if [ -f "$SHELL_CONFIG" ]; then
-            cp "$SHELL_CONFIG" "${SHELL_CONFIG}.backup.$(date +%Y%m%d_%H%M%S)"
-            echo -e "${GREEN}✓${NC} Backed up existing config"
-        fi
-        
-        # Check if already configured
-        if grep -q "SFM - Shell Function Manager" "$SHELL_CONFIG" 2>/dev/null; then
-            echo -e "${YELLOW}⚠${NC} SFM already configured in $SHELL_CONFIG"
-            log "SFM already in shell config"
-        else
-            if [ "$SHELL_NAME" = "fish" ]; then
-                cat >> "$SHELL_CONFIG" << EOF
+  printf '%b\n\n' "${BOLD}Updating shell configuration...${NC}"
 
-# SFM - Shell Function Manager
-if test -f "$FUNCTIONS_FILE"
-    source "$FUNCTIONS_FILE"
-end
-if test -f "$ALIASES_FILE"
-    source "$ALIASES_FILE"
-end
+  if [[ "$SHELL_NAME" == "fish" ]]; then
+    # fish loads conf.d automatically
+    atomic_write "$SHELL_CONFIG" <<EOF
+# SFM - Shell Function Manager (auto-loaded by fish)
+test -f "$FUNCTIONS_FILE"; and source "$FUNCTIONS_FILE"
+test -f "$ALIASES_FILE"; and source "$ALIASES_FILE"
 EOF
-            else
-                cat >> "$SHELL_CONFIG" << EOF
+    printf '%b\n\n' "${GREEN}✓${NC} Fish drop-in created: ${BOLD}$SHELL_CONFIG${NC}"
+    log_info "Fish drop-in created: $SHELL_CONFIG"
+    return 0
+  fi
 
-# SFM - Shell Function Manager
+  if ! ask_yn "Automatically source SFM in your $SHELL_CONFIG?"; then
+    printf '%b\n' "${YELLOW}Skipped auto-config.${NC}"
+    printf '%b\n' "Add this block manually to ${BOLD}$SHELL_CONFIG${NC}:"
+    printf '\n'
+    cat <<EOF
+$SFM_BEGIN
 [ -f "$FUNCTIONS_FILE" ] && source "$FUNCTIONS_FILE"
 [ -f "$ALIASES_FILE" ] && source "$ALIASES_FILE"
+$SFM_END
 EOF
-            fi
-            echo -e "${GREEN}✓${NC} Updated $SHELL_CONFIG"
-            log "Updated shell config: $SHELL_CONFIG"
-        fi
-    else
-        echo -e "${YELLOW}Skipped shell configuration update${NC}"
-        echo ""
-        echo -e "To manually enable SFM, add these lines to your $SHELL_CONFIG:"
-        if [ "$SHELL_NAME" = "fish" ]; then
-            echo -e "${CYAN}source \"$FUNCTIONS_FILE\"${NC}"
-            echo -e "${CYAN}source \"$ALIASES_FILE\"${NC}"
-        else
-            echo -e "${CYAN}[ -f \"$FUNCTIONS_FILE\" ] && source \"$FUNCTIONS_FILE\"${NC}"
-            echo -e "${CYAN}[ -f \"$ALIASES_FILE\" ] && source \"$ALIASES_FILE\"${NC}"
-        fi
-    fi
+    printf '\n'
+    return 0
+  fi
+
+  touch "$SHELL_CONFIG"
+
+  local backup_file="${SHELL_CONFIG}.sfm-backup-$(date +%Y%m%d_%H%M%S)"
+  cp "$SHELL_CONFIG" "$backup_file"
+  printf '%b\n' "${GREEN}✓${NC} Backed up to: ${backup_file##*/}"
+  log_info "Backed up shell config to: $backup_file"
+
+  # Remove old block (if any)
+  if grep -qF "$SFM_BEGIN" "$SHELL_CONFIG" 2>/dev/null; then
+    log_info "Removing old SFM block from $SHELL_CONFIG"
+    # delete from begin marker to end marker inclusive
+    sed -i.bak "/$(printf '%s' "$SFM_BEGIN" | sed 's/[.[\*^$(){}?+|/]/\\&/g')/,/$(printf '%s' "$SFM_END" | sed 's/[.[\*^$(){}?+|/]/\\&/g')/d" "$SHELL_CONFIG" || true
+    rm -f "${SHELL_CONFIG}.bak" || true
+  fi
+
+  cat >>"$SHELL_CONFIG" <<EOF
+
+$SFM_BEGIN
+[ -f "$FUNCTIONS_FILE" ] && source "$FUNCTIONS_FILE"
+[ -f "$ALIASES_FILE" ] && source "$ALIASES_FILE"
+$SFM_END
+EOF
+
+  printf '%b\n\n' "${GREEN}✓${NC} Updated $SHELL_CONFIG"
+  log_info "Updated shell config: $SHELL_CONFIG"
 }
 
-# Show summary
-show_summary() {
-    echo ""
-    echo -e "${CYAN}${BOLD}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${CYAN}${BOLD}║                  Setup Complete! 🎉                        ║${NC}"
-    echo -e "${CYAN}${BOLD}╚════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    
-    echo -e "${BOLD}Configuration Summary:${NC}"
-    echo -e "  Shell:       ${GREEN}$SHELL_NAME${NC}"
-    echo -e "  Distro:      ${GREEN}$DISTRO${NC}"
-    echo -e "  Pkg Manager: ${GREEN}$PKG_MANAGER${NC}"
-    echo ""
-    
-    echo -e "${BOLD}Your SFM files:${NC}"
-    echo -e "  Functions: ${GREEN}$FUNCTIONS_FILE${NC}"
-    echo -e "  Aliases:   ${GREEN}$ALIASES_FILE${NC}"
-    echo -e "  Config:    ${GREEN}$SHELL_CONFIG${NC}"
-    echo -e "  Log:       ${GREEN}$LOG_FILE${NC}"
-    echo ""
-    
-    echo -e "${BOLD}To apply changes:${NC}"
-    echo -e "  ${YELLOW}source $SHELL_CONFIG${NC}"
-    echo -e "  ${YELLOW}# or restart your terminal${NC}"
-    echo ""
-    
-    echo -e "${BOLD}Quick Reference:${NC}"
-    if grep -q "extract" "$FUNCTIONS_FILE" 2>/dev/null; then
-        echo -e "  ${CYAN}extract${NC} <file>     - Extract any archive"
-    fi
-    if grep -q "mkcd" "$FUNCTIONS_FILE" 2>/dev/null; then
-        echo -e "  ${CYAN}mkcd${NC} <dir>        - Create and enter directory"
-    fi
-    if grep -q "backup" "$FUNCTIONS_FILE" 2>/dev/null; then
-        echo -e "  ${CYAN}backup${NC} <file>     - Create timestamped backup"
-    fi
-    if grep -q "myip" "$FUNCTIONS_FILE" 2>/dev/null; then
-        echo -e "  ${CYAN}myip${NC}              - Show IP addresses"
-    fi
-    if grep -q "portcheck" "$FUNCTIONS_FILE" 2>/dev/null; then
-        echo -e "  ${CYAN}portcheck${NC} <port>   - Check port status"
-    fi
-    if grep -q "psgrep" "$FUNCTIONS_FILE" 2>/dev/null; then
-        echo -e "  ${CYAN}psgrep${NC} <name>     - Find process by name"
-    fi
-    echo ""
-    
-    echo -e "${BOLD}Manage SFM:${NC}"
-    echo -e "  Edit functions: ${CYAN}${EDITOR:-vim} $FUNCTIONS_FILE${NC}"
-    echo -e "  Edit aliases:   ${CYAN}${EDITOR:-vim} $ALIASES_FILE${NC}"
-    echo -e "  Re-run wizard:  ${CYAN}bash $0${NC}"
-    echo -e "  View log:       ${CYAN}cat $LOG_FILE${NC}"
-    echo ""
-    
-    # Save config summary
-    cat > "$CONFIG_FILE" << EOF
-# SFM Configuration Summary
-# Generated: $(date)
-
-SHELL_NAME=$SHELL_NAME
-SHELL_CONFIG=$SHELL_CONFIG
-DISTRO=$DISTRO
-PKG_MANAGER=$PKG_MANAGER
-FUNCTIONS_FILE=$FUNCTIONS_FILE
-ALIASES_FILE=$ALIASES_FILE
-INSTALL_DATE=$(date +%Y-%m-%d)
-EOF
-    
-    log "Setup completed successfully"
-}
-
-# Rollback function
+# ---------------------------
+# Rollback / uninstall
+# ---------------------------
 rollback_sfm() {
-    echo -e "${YELLOW}${BOLD}SFM Rollback${NC}"
-    echo ""
-    
-    if ! ask_yn "This will remove SFM configuration. Continue?"; then
-        echo "Rollback cancelled"
-        return 0
+  printf '\n%b\n\n' "${YELLOW}${BOLD}SFM ROLLBACK${NC}"
+
+  if ! ask_yn "This will remove SFM configuration. Continue?"; then
+    printf '%b\n' "Rollback cancelled"
+    return 0
+  fi
+
+  local rollback_success=true
+
+  # fish: remove drop-in
+  if [[ "$SHELL_NAME" == "fish" ]]; then
+    if [[ -f "$SHELL_CONFIG" ]]; then
+      rm -f "$SHELL_CONFIG" || rollback_success=false
+      printf '%b\n' "${GREEN}✓${NC} Removed: $SHELL_CONFIG"
+      log_info "Removed fish drop-in: $SHELL_CONFIG"
     fi
-    
-    # Find and restore backup
-    local backup_file=$(ls -t "${SHELL_CONFIG}.backup."* 2>/dev/null | head -1)
-    if [ -n "$backup_file" ]; then
-        if ask_yn "Restore shell config from backup ($backup_file)?"; then
-            cp "$backup_file" "$SHELL_CONFIG"
-            echo -e "${GREEN}✓${NC} Restored $SHELL_CONFIG"
-            log "Restored shell config from $backup_file"
-        fi
-    fi
-    
-    # Remove SFM lines from shell config
-    if grep -q "SFM - Shell Function Manager" "$SHELL_CONFIG" 2>/dev/null; then
-        if [ "$SHELL_NAME" = "fish" ]; then
-            sed -i '/# SFM - Shell Function Manager/,/end/d' "$SHELL_CONFIG"
+  else
+    # restore latest backup if exists
+    local backup_file=""
+    backup_file="$(ls -t "${SHELL_CONFIG}.sfm-backup-"* 2>/dev/null | head -1 || true)"
+    if [[ -n "$backup_file" ]]; then
+      if ask_yn "Restore from backup: ${backup_file##*/}?"; then
+        if cp "$backup_file" "$SHELL_CONFIG"; then
+          printf '%b\n' "${GREEN}✓${NC} Restored shell config"
+          log_info "Restored shell config from backup"
         else
-            sed -i '/# SFM - Shell Function Manager/,+2d' "$SHELL_CONFIG"
+          printf '%b\n' "${RED}✗${NC} Failed to restore shell config"
+          log_error "Failed to restore shell config"
+          rollback_success=false
         fi
-        echo -e "${GREEN}✓${NC} Removed SFM from $SHELL_CONFIG"
-        log "Removed SFM from shell config"
+      fi
+    else
+      # remove marker block if present
+      if grep -qF "$SFM_BEGIN" "$SHELL_CONFIG" 2>/dev/null; then
+        sed -i.bak "/$(printf '%s' "$SFM_BEGIN" | sed 's/[.[\*^$(){}?+|/]/\\&/g')/,/$(printf '%s' "$SFM_END" | sed 's/[.[\*^$(){}?+|/]/\\&/g')/d" "$SHELL_CONFIG" || true
+        rm -f "${SHELL_CONFIG}.bak" || true
+        printf '%b\n' "${GREEN}✓${NC} Removed SFM block from $SHELL_CONFIG"
+        log_info "Removed SFM block from $SHELL_CONFIG"
+      fi
     fi
-    
-    # Ask about removing SFM directory
-    if ask_yn "Remove SFM directory ($SFM_DIR)?"; then
-        rm -rf "$SFM_DIR"
-        echo -e "${GREEN}✓${NC} Removed $SFM_DIR"
-        log "Removed SFM directory"
+  fi
+
+  if ask_yn "Remove SFM directory ($SFM_DIR)?"; then
+    if [[ -d "$SFM_DIR" ]]; then
+      rm -rf "$SFM_DIR" || rollback_success=false
+      printf '%b\n' "${GREEN}✓${NC} Removed $SFM_DIR"
+      # can't log after deleting dir reliably
     fi
-    
-    echo ""
-    echo -e "${GREEN}Rollback complete. Please restart your terminal.${NC}"
+  fi
+
+  printf '\n'
+  if [[ "$rollback_success" == true ]]; then
+    printf '%b\n\n' "${GREEN}✓ Rollback complete. Restart your terminal.${NC}"
+  else
+    printf '%b\n\n' "${YELLOW}⚠ Rollback finished with errors.${NC}"
+  fi
 }
 
-# Check if this is an update/reinstall
-check_existing_install() {
-    if [ -f "$CONFIG_FILE" ]; then
-        echo -e "${YELLOW}⚠${NC} Existing SFM installation detected"
-        echo ""
-        . "$CONFIG_FILE"
-        echo -e "Previous install: ${CYAN}$INSTALL_DATE${NC}"
-        echo ""
-        
-        PS3="$(echo -e ${CYAN}Choose an option:${NC} )"
-        options=("Update/Reconfigure" "Rollback/Uninstall" "Exit")
-        select opt in "${options[@]}"; do
-            case $opt in
-                "Update/Reconfigure")
-                    echo -e "${GREEN}Proceeding with update...${NC}"
-                    echo ""
-                    return 0
-                    ;;
-                "Rollback/Uninstall")
-                    rollback_sfm
-                    exit 0
-                    ;;
-                "Exit")
-                    echo "Exiting..."
-                    exit 0
-                    ;;
-                *) echo -e "${RED}Invalid option${NC}";;
-            esac
-        done
-    fi
+# ---------------------------
+# Main setup
+# ---------------------------
+setup_sfm() {
+  printf '\n%b\n\n' "${CYAN}${BOLD}SFM - Shell Function Manager${NC}"
+
+  ensure_log_ready
+  log "SFM Setup Started"
+
+  detect_distro
+  detect_package_manager
+  detect_shell
+  check_dependencies
+  generate_functions
+  generate_aliases
+  update_shell_config
+
+  printf '%b\n\n' "${GREEN}${BOLD}✓ SFM setup complete!${NC}"
+  printf '%b\n' "${BOLD}Functions:${NC} extract, mkcd, psgrep, backup, myip, portcheck"
+  printf '%b\n\n' "${BOLD}Activate:${NC}"
+
+  if [[ "$SHELL_NAME" == "fish" ]]; then
+    printf '%b\n' "  fish will auto-load it. Restart terminal or run: ${CYAN}exec fish${NC}"
+  else
+    printf '%b\n' "  ${CYAN}source $SHELL_CONFIG${NC}"
+  fi
+
+  printf '\n'
+  log "SFM Setup Completed Successfully"
 }
 
-# Main execution
-main() {
-    show_header
-    
-    # System detection
-    detect_distro
-    detect_package_manager
-    detect_shell
-    
-    # Check for existing installation
-    check_existing_install
-    
-    # Dependency check
-    check_dependencies
-    
-    # Initialize files
-    init_files
-    
-    # Configuration
-    configure_functions
-    configure_aliases
-    
-    # Update shell
-    update_shell_config
-    
-    # Show summary
-    show_summary
-}
+# ---------------------------
+# Arg parsing
+# ---------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --batch|-b)
+      BATCH_MODE=true
+      YES_TO_ALL=true
+      shift
+      ;;
+    --yes|-y)
+      YES_TO_ALL=true
+      shift
+      ;;
+    --shell)
+      TARGET_SHELL_OVERRIDE="${2:-}"
+      shift 2
+      ;;
+    --help|-h)
+      show_help
+      exit 0
+      ;;
+    --uninstall|--rollback)
+      ensure_log_ready
+      detect_shell
+      rollback_sfm
+      exit 0
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
 
-# Trap errors
-trap 'echo -e "${RED}Error occurred. Check $LOG_FILE for details${NC}"; log "ERROR: Script failed"' ERR
-
-# Run main
-main
+setup_sfm
