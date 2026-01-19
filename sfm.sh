@@ -184,9 +184,9 @@ detect_package_manager() {
 
   command -v apt    >/dev/null 2>&1 && system_managers+=("apt")
   command -v dnf    >/dev/null 2>&1 && system_managers+=("dnf")
+  command -v pacman >/dev/null 2>&1 && system_managers+=("pacman")
   command -v yum    >/dev/null 2>&1 && system_managers+=("yum")
   command -v yay    >/dev/null 2>&1 && system_managers+=("yay")
-  command -v pacman >/dev/null 2>&1 && system_managers+=("pacman")
   command -v zypper >/dev/null 2>&1 && system_managers+=("zypper")
   command -v apk    >/dev/null 2>&1 && system_managers+=("apk")
 
@@ -196,7 +196,7 @@ detect_package_manager() {
   PKG_MANAGER="none"
   PKG_INSTALL_CMD=""
 
-  for mgr in apt dnf yum yay pacman zypper apk; do
+  for mgr in apt dnf pacman yum yay zypper apk; do
     if [[ " ${system_managers[*]} " == *" $mgr "* ]]; then
       PKG_MANAGER="$mgr"
       break
